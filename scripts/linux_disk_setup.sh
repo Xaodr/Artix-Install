@@ -1,63 +1,74 @@
 #!/bin/bash
 
-# ANSI color codes
+# ANSI-Farbencodes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-NC='\033[0m' # No Color
+NC='\033[0m' # Keine Farbe
 
-# Check if the script is running as root
+# Überprüfung, ob das Skript als Root ausgeführt wird
 if [ "$(id -u)" != "0" ]; then
-   echo -e "${RED}This script must be run as root.${NC}"
+   echo -e "${RED}Dieses Skript muss als Root ausgeführt werden.${NC}"
    exit 1
 fi
 
-# List available disks
-echo -e "${GREEN}Available disks:${NC}"
+# Auflistung der verfügbaren Festplatten
+echo -e "${GREEN}Verfügbare Festplatten:${NC}"
 disks=($(lsblk -d -e 7,11 -o NAME -n))
 for i in "${!disks[@]}"; do
     echo -e "${GREEN}$((i+1)). ${disks[i]}${NC}"
 done
 
-# User selects a disk
+# Benutzer wählt eine Festplatte aus
 echo ""
-read -p "Enter the number of the disk you want to use: " disk_number
+read -p "Geben Sie die Nummer der zu verwendenden Festplatte ein: " disk_number
 selected_disk="/dev/${disks[$((disk_number-1))]}"
 
-# Safety check
-echo -e "${RED}Selected disk: $selected_disk${NC}"
-read -p "Are you sure you want to proceed with $selected_disk? This can lead to data loss. (y/n): " -n 1 -r
+# Partitionspräfix festlegen (unterschiedlich für NVMe und andere)
+partition_prefix=""
+if [[ $selected_disk == *"nvme"* ]]; then
+    partition_prefix="p"
+fi
+
+# Sicherheitsüberprüfung
+echo -e "${RED}Ausgewählte Festplatte: $selected_disk${NC}"
+read -p "Sind Sie sicher, dass Sie mit $selected_disk fortfahren möchten? Dies kann zum Datenverlust führen. (y/n): " -n 1 -r
 echo
 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 1
 fi
 
-# Clear the screen
+# Bildschirm löschen
 clear
 
-# Start partitioning with cfdisk
-echo -e "${GREEN}Starting cfdisk for $selected_disk${NC}"
-cfdisk $selected_disk
+# Automatische Partitionierung mit fdisk
+echo -e "${GREEN}Partitionierung von $selected_disk${NC}"
+{
+   echo y # Automatisch mit Ja antworten, um vorhandene Signaturen zu entfernen
+   echo g # Erstellen einer neuen GPT-Partitionstabelle
+   echo n # Neue Partition (EFI)
+   echo 1 # Partition Nummer 1
+   echo   # Standard - Beginn am Anfang der Festplatte
+   echo +1G # 1 GB EFI-Partition
+   echo t # Typ der Partition ändern
+   echo 1 # EFI-System
+   echo n # Neue Partition (Linux-Dateisystem)
+   echo 2 # Partition Nummer 2
+   echo   # Standard - Start unmittelbar nach der vorherigen Partition
+   echo   # Standard - Partition bis zum Ende der Festplatte ausdehnen
+   echo w # Schreiben der Partitionstabelle und Beenden
+} | fdisk $selected_disk
 
-# LUKS Formatting the second partition
-echo -e "${GREEN}Formatting the second partition with LUKS...${NC}"
-cryptsetup luksFormat "${selected_disk}2"
+# Partitionsnamen für die Formatierung festlegen
+efi_partition="${selected_disk}${partition_prefix}1"
+linux_partition="${selected_disk}${partition_prefix}2"
 
-# Opening the LUKS partition
-cryptsetup open "${selected_disk}2" alpha
+# EFI-Partition als FAT32 formatieren
+echo -e "${GREEN}Formatierung der EFI-Partition als FAT32...${NC}"
+mkfs.fat -F32 $efi_partition
 
-# Format the first partition as FAT32
-echo -e "${GREEN}Formatting the first partition as FAT32...${NC}"
-mkfs.fat -F32 "${selected_disk}1"
+# Formatieren der Linux-Partition als ext4
+echo -e "${GREEN}Formatierung der Linux-Partition als ext4...${NC}"
+mkfs.ext4 $linux_partition
 
-# Format the opened LUKS partition as ext4
-echo -e "${GREEN}Formatting the LUKS partition as ext4...${NC}"
-mkfs.ext4 /dev/mapper/alpha
-
-# Mount the root partition
-mount /dev/mapper/alpha /mnt/
-
-# Create and mount the boot directory
-mkdir /mnt/boot
-mount "${selected_disk}1" /mnt/boot
-
-echo -e "${GREEN}Installation steps completed.${NC}"
+# Die Partitionen sind jetzt bereit zur Verwendung
+echo -e "${GREEN}Partitionierung und Formatierung abgeschlossen.${NC}"
